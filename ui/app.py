@@ -82,8 +82,12 @@ header[data-testid="stHeader"] {
   background: transparent;
 }
 
-div[data-testid="stToolbar"] {
-  display: none;
+/* Hide only the action items in toolbar to keep sidebar toggle visible */
+[data-testid="stToolbar"] [data-testid="stActionMenu"] {
+  display: none !important;
+}
+[data-testid="stToolbar"] button[kind="secondary"] {
+  display: none !important; /* Hide the Deploy button */
 }
 
 footer {
