@@ -428,7 +428,7 @@ def page_upload() -> None:
 
     st.markdown("---")
     st.markdown("<div class='ns-card'><b>Preview</b></div>", unsafe_allow_html=True)
-    st.dataframe(df.head(20), use_container_width=True)
+    st.dataframe(df.head(20), width="stretch")
 
 
 def page_risk_dashboard() -> None:
@@ -659,7 +659,7 @@ def page_analytics() -> None:
                  "F1 (No-Show)": lambda v: f"{v:.4f}" if isinstance(v, float) else v,
                  "R² Score": lambda v: f"{v:.4f}" if isinstance(v, float) else v}
             )
-            st.dataframe(styled_metrics, use_container_width=True, hide_index=True)
+            st.dataframe(styled_metrics, width="stretch", hide_index=True)
 
             # KPI strip for best model's R²
             valid = metrics_df[metrics_df["_missing"] == False]
