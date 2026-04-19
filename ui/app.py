@@ -2,6 +2,8 @@ import os
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+from src.guidelines import get_guidelines
+
 import joblib
 import numpy as np
 import pandas as pd
@@ -387,6 +389,20 @@ def _predict(df: pd.DataFrame, bundle: Optional[ModelBundle]) -> Tuple[pd.Series
     preds = (probs >= 0.5).astype(int)
     labels = pd.Series(preds, index=df.index).map({1: "No-Show", 0: "Show"})
     return labels, probs
+
+
+def prepare_llm_input(risk: float, factors: dict) -> dict:
+    """LLM input preparation logic"""
+    guidelines = get_guidelines(risk)
+    
+    print("Risk:", risk)
+    print("Guidelines:", guidelines)
+    
+    return {
+        "risk": risk,
+        "factors": factors,
+        "guidelines": guidelines
+    }
 
 
 def _style_risk_table(high_risk_threshold: float):
