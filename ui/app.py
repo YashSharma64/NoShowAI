@@ -875,10 +875,15 @@ def page_ai_report() -> None:
                 value="Call patient, Send reminder",
             )
 
-        sample_factors = [f.strip() for f in sample_factors_str.split(",") if f.strip()]
-        sample_guidelines = [g.strip() for g in sample_guidelines_str.split(",") if g.strip()]
+        # 1️⃣ Display Risk Score
+        st.subheader("Risk Score")
+        st.write(sample_risk)
 
-        if st.button("🚀 Generate Sample Report", type="primary", use_container_width=True):
+        # 2️⃣ Highlight High-Risk Cases
+        if sample_risk > 0.7:
+            st.error("⚠️ High Risk Appointment")
+
+        if st.button("Generate Care Report", type="primary", use_container_width=True):
             with st.spinner("Generating AI report..."):
                 report = generate_report(
                     risk=sample_risk,
@@ -948,11 +953,22 @@ def page_ai_report() -> None:
         if "guidelines" in results.columns:
             st.markdown(f"**Guidelines:** {row_data['guidelines']}")
 
+    llm_input_preview = llm_inputs[selected_idx]
+    prev_risk = llm_input_preview["risk"]
+
+    # 1️⃣ Display Risk Score
+    st.subheader("Risk Score")
+    st.write(prev_risk)
+
+    # 2️⃣ Highlight High-Risk Cases
+    if prev_risk > 0.7:
+        st.error("⚠️ High Risk Appointment")
+
     # ── Generate report button ───────────────────────────────────────────
     col_btn, col_info = st.columns([0.4, 0.6])
     with col_btn:
         gen_btn = st.button(
-            "🚀 Generate AI Report",
+            "Generate Care Report",
             type="primary",
             use_container_width=True,
         )
@@ -1080,7 +1096,7 @@ def _render_report(
         level = "LOW"
 
     st.markdown("---")
-    st.markdown("### 📄 Generated Clinical Report")
+    st.subheader("Care Coordination Report")
 
     # Top info bar
     st.markdown(
@@ -1122,12 +1138,14 @@ def _render_report(
         unsafe_allow_html=True,
     )
 
-    # Download button
+    # 4️⃣ Display Structured Report (Raw view / fallback)
+    st.text_area("Report", report, height=300)
+
+    # 5️⃣ Add Download Button
     st.download_button(
-        label="⬇️ Download Report as Text",
+        label="Download Report",
         data=report,
-        file_name=f"noshow_report_risk_{risk_pct}.txt",
-        mime="text/plain",
+        file_name="care_report.txt",
     )
 
 
