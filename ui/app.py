@@ -1,7 +1,13 @@
 import os
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
+from src.data_processing import (
+    build_structured_input,
+    clean_input_data,
+    extract_top_factors,
+    prepare_model_features,
+)
 from src.guidelines import get_guidelines
 
 import joblib
@@ -332,23 +338,26 @@ def _safe_load_bundle(
 
 
 def _prepare_features(df: pd.DataFrame) -> pd.DataFrame:
-    x = df.copy()
+    return prepare_model_features(df)
 
-    # Common columns seen in training code
-    x = x.drop(columns=["NoShow", "ScheduledDay", "AppointmentDay"], errors="ignore")
 
-    # Basic cleanup: convert booleans to ints, keep numeric when possible
-    for c in x.columns:
-        if x[c].dtype == bool:
-            x[c] = x[c].astype(int)
+def _extract_row_factors(
+    x: pd.DataFrame,
+    probs: pd.Series,
+    bundle: Optional[ModelBundle],
+) -> List[List[str]]:
+    if bundle is None:
+        return [
+            ["Long lead time", "Past no-shows"] if float(r) >= 0.75 else ["Moderate attendance risk"]
+            for r in probs.values
+        ]
 
-    # One-hot encode categoricals in a safe default manner
-    cat_cols = [c for c in x.columns if x[c].dtype == object]
-    if cat_cols:
-        x = pd.get_dummies(x, columns=cat_cols, drop_first=False)
-
-    x = x.replace([np.inf, -np.inf], np.nan).fillna(0)
-    return x
+    model = bundle.model
+    row_factors: List[List[str]] = []
+    for idx, risk in probs.items():
+        row = x.loc[idx]
+        row_factors.append(extract_top_factors(float(risk), row, model, top_n=2))
+    return row_factors
 
 
 def _predict(df: pd.DataFrame, bundle: Optional[ModelBundle]) -> Tuple[pd.Series, pd.Series]:
@@ -391,18 +400,10 @@ def _predict(df: pd.DataFrame, bundle: Optional[ModelBundle]) -> Tuple[pd.Series
     return labels, probs
 
 
-def prepare_llm_input(risk: float, factors: dict) -> dict:
-    """LLM input preparation logic"""
+def prepare_llm_input(risk: float, factors: List[str]) -> dict:
+    """Create structured model output for downstream LLM/report generation."""
     guidelines = get_guidelines(risk)
-    
-    print("Risk:", risk)
-    print("Guidelines:", guidelines)
-    
-    return {
-        "risk": risk,
-        "factors": factors,
-        "guidelines": guidelines
-    }
+    return build_structured_input(risk, factors, guidelines)
 
 
 def _style_risk_table(high_risk_threshold: float):
@@ -467,6 +468,7 @@ def page_risk_dashboard() -> None:
         return
 
     df = st.session_state["df"].copy()
+    df = clean_input_data(df)
 
     with st.expander("Model Settings", expanded=False):
         model_path = st.text_input("Model path", value=DEFAULT_MODEL_PATH)
@@ -493,12 +495,25 @@ def page_risk_dashboard() -> None:
     if run:
         with st.spinner("Scoring appointments..."):
             labels, probs = _predict(df, bundle)
+            feature_frame = _prepare_features(df)
+
+            if bundle is not None:
+                feature_names = getattr(bundle.model, "feature_names_in_", None)
+                if feature_names is not None:
+                    feature_frame = feature_frame.reindex(columns=list(feature_names), fill_value=0)
+
+            row_factors = _extract_row_factors(feature_frame, probs, bundle)
+            llm_inputs = [prepare_llm_input(float(risk), factors) for risk, factors in zip(probs.values, row_factors)]
+            row_guidelines = [item["guidelines"] for item in llm_inputs]
 
         results = df.copy()
         results["prediction"] = labels.values
         results["probability"] = probs.values
+        results["factors"] = [", ".join(items) for items in row_factors]
+        results["guidelines"] = ["; ".join(items) for items in row_guidelines]
 
         st.session_state["predictions"] = results
+        st.session_state["llm_inputs"] = llm_inputs
         st.toast("Risk scoring complete", icon=None)
 
     results = st.session_state["predictions"].copy()
@@ -542,6 +557,10 @@ def page_risk_dashboard() -> None:
                 "Sort or filter by the **probability** column to focus on high‑risk appointments."
             )
         st.dataframe(results, width="stretch", height=520)
+
+    if "llm_inputs" in st.session_state:
+        with st.expander("Structured LLM Input (Sample)", expanded=False):
+            st.json(st.session_state["llm_inputs"][:5])
 
 
 def _compute_model_metrics(df: pd.DataFrame) -> Optional[pd.DataFrame]:
