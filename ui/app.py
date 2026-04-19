@@ -1,8 +1,14 @@
 import os
+import sys
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
+import importlib.util
 
 from dotenv import load_dotenv
+
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 # Load environment variables from .env
 load_dotenv()
@@ -548,21 +554,30 @@ def page_risk_dashboard() -> None:
     st.markdown("---")
     st.markdown("<div class='ns-card'><b>Predicted Risk Table</b></div>", unsafe_allow_html=True)
 
-    n_cells = results.shape[0] * results.shape[1]
-    # For very large tables, avoid Pandas Styler entirely (it has hard limits and can be slow).
-    max_cells_styled = 200_000
-    use_styler = "probability" in results.columns and n_cells <= max_cells_styled
+    display_results = results.copy()
+    if "probability" in display_results.columns:
+        display_results["risk_level"] = np.where(
+            display_results["probability"].astype(float) >= high_risk_threshold,
+            "High Risk",
+            "Low Risk",
+        )
 
-    if use_styler:
-        styled = results.style.apply(_style_risk_table(high_risk_threshold), axis=1)
-        st.dataframe(styled, width="stretch", height=520)
-    else:
-        if "probability" in results.columns and n_cells > max_cells_styled:
-            st.caption(
-                "Table is large; showing without row highlighting. "
-                "Sort or filter by the **probability** column to focus on high‑risk appointments."
-            )
-        st.dataframe(results, width="stretch", height=520)
+    column_config = {}
+    if "probability" in display_results.columns:
+        column_config["probability"] = st.column_config.ProgressColumn(
+            "probability",
+            help="Estimated no-show risk (0–1)",
+            min_value=0.0,
+            max_value=1.0,
+            format="%.2f",
+        )
+
+    st.dataframe(
+        display_results,
+        width="stretch",
+        height=520,
+        column_config=column_config if column_config else None,
+    )
 
     if "llm_inputs" in st.session_state:
         with st.expander("Structured LLM Input (Sample)", expanded=False):
@@ -699,12 +714,7 @@ def page_analytics() -> None:
                     pass
                 return [""] * len(row)
 
-            styled_metrics = display_df.style.apply(_highlight_best, axis=1).format(
-                {"Accuracy": lambda v: f"{v:.4f}" if isinstance(v, float) else v,
-                 "F1 (No-Show)": lambda v: f"{v:.4f}" if isinstance(v, float) else v,
-                 "R² Score": lambda v: f"{v:.4f}" if isinstance(v, float) else v}
-            )
-            st.dataframe(styled_metrics, width="stretch", hide_index=True)
+            st.dataframe(display_df, width="stretch", hide_index=True)
 
             # KPI strip for best model's R²
             valid = metrics_df[metrics_df["_missing"] == False]
