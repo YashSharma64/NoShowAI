@@ -2,6 +2,11 @@ import os
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
+from dotenv import load_dotenv
+
+# Load environment variables from .env
+load_dotenv()
+
 from src.data_processing import (
     build_structured_input,
     clean_input_data,
@@ -9,6 +14,7 @@ from src.data_processing import (
     prepare_model_features,
 )
 from src.guidelines import get_guidelines
+from src.report_generator import generate_report
 
 import joblib
 import numpy as np
@@ -798,13 +804,340 @@ def page_analytics() -> None:
         st.info("Upload a labelled dataset (with `NoShow` column) to see feature importances.")
 
 
+# ---------------------------------------------------------------------------
+# Page 4 — AI Report (Milestone 2 Core)
+# ---------------------------------------------------------------------------
+
+def page_ai_report() -> None:
+    """LLM-powered clinical risk report generation page.
+
+    This is the CORE of Milestone 2.  It takes the ML model's output
+    (risk score, contributing factors, clinical guidelines) and feeds
+    them to an LLM to produce a structured, medically-aware report.
+    """
+    st.subheader("🤖 AI Clinical Report")
+    st.markdown(
+        "<div class='ns-helper'><b>Milestone 2</b> — Generate detailed, AI-powered risk reports for individual patient appointments using LLM integration.</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div class='ns-helper' style='margin-top:4px;'>Reports are dynamic and change based on each patient's unique risk score, contributing factors, and recommended guidelines.</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── API Key configuration (sidebar) ──────────────────────────────────
+    with st.sidebar.expander("🔑 LLM API Key", expanded=False):
+        api_key = st.text_input(
+            "Gemini / OpenAI API Key",
+            type="password",
+            help="Enter your Google Gemini or OpenAI API key. Leave blank to use the built-in template engine.",
+        )
+        llm_backend = st.selectbox(
+            "LLM Backend",
+            ["Auto-detect", "Google Gemini", "OpenAI", "Template (No API)"],
+            index=0,
+        )
+        backend_map = {
+            "Auto-detect": None,
+            "Google Gemini": "gemini",
+            "OpenAI": "openai",
+            "Template (No API)": "template",
+        }
+        selected_backend = backend_map[llm_backend]
+
+    # ── Check if predictions exist ───────────────────────────────────────
+    if "predictions" not in st.session_state or "llm_inputs" not in st.session_state:
+        st.warning(
+            "⚠️ No predictions available yet. "
+            "Go to **Risk Dashboard** → click **Predict No-Show Risk** first."
+        )
+        st.info("You can also generate a **sample report** below to test the system.")
+        st.markdown("---")
+
+        # ── Sample / demo report ─────────────────────────────────────────
+        st.markdown("### 📝 Sample Report Generator")
+        st.markdown(
+            "<div class='ns-helper'>Test the AI report engine with custom inputs:</div>",
+            unsafe_allow_html=True,
+        )
+
+        col_r, col_f, col_g = st.columns(3)
+        with col_r:
+            sample_risk = st.slider("Risk Score", 0.0, 1.0, 0.82, 0.01)
+        with col_f:
+            sample_factors_str = st.text_input(
+                "Factors (comma-separated)",
+                value="Long lead time, Past no-shows",
+            )
+        with col_g:
+            sample_guidelines_str = st.text_input(
+                "Guidelines (comma-separated)",
+                value="Call patient, Send reminder",
+            )
+
+        sample_factors = [f.strip() for f in sample_factors_str.split(",") if f.strip()]
+        sample_guidelines = [g.strip() for g in sample_guidelines_str.split(",") if g.strip()]
+
+        if st.button("🚀 Generate Sample Report", type="primary", use_container_width=True):
+            with st.spinner("Generating AI report..."):
+                report = generate_report(
+                    risk=sample_risk,
+                    factors=sample_factors,
+                    guidelines=sample_guidelines,
+                    api_key=api_key if api_key else None,
+                    backend=selected_backend,
+                )
+            _render_report(sample_risk, sample_factors, sample_guidelines, report)
+        return
+
+    # ── Patient-level report generation ──────────────────────────────────
+    results = st.session_state["predictions"].copy()
+    llm_inputs = st.session_state["llm_inputs"]
+
+    st.markdown("---")
+
+    # ── KPI strip ────────────────────────────────────────────────────────
+    total = len(results)
+    high_risk_count = (results["probability"] >= 0.70).sum() if "probability" in results.columns else 0
+
+    k1, k2, k3 = st.columns(3)
+    with k1:
+        st.markdown(
+            f"<div class='ns-kpi'><b>Total Appointments</b><br/>{total}</div>",
+            unsafe_allow_html=True,
+        )
+    with k2:
+        st.markdown(
+            f"<div class='ns-kpi'><b>High Risk (≥70%)</b><br/>{int(high_risk_count)}</div>",
+            unsafe_allow_html=True,
+        )
+    with k3:
+        st.markdown(
+            "<div class='ns-kpi'><b>LLM Status</b><br/>Ready</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("---")
+
+    # ── Row selector ─────────────────────────────────────────────────────
+    st.markdown("### 🔍 Select Patient Appointment")
+
+    # Build a descriptive label for each row
+    row_labels = []
+    for i in range(min(total, len(llm_inputs))):
+        prob = results["probability"].iloc[i] if "probability" in results.columns else 0
+        factors_str = results["factors"].iloc[i] if "factors" in results.columns else ""
+        label = f"Row {i+1}  |  Risk: {prob:.0%}  |  {factors_str[:60]}"
+        row_labels.append(label)
+
+    selected_label = st.selectbox(
+        "Choose an appointment to generate a report for:",
+        row_labels,
+        index=0,
+    )
+    selected_idx = row_labels.index(selected_label)
+
+    # Show selected patient's data
+    with st.expander("📋 Selected Appointment Details", expanded=True):
+        row_data = results.iloc[selected_idx]
+        display_cols = [c for c in results.columns if c not in ("factors", "guidelines")]
+        st.dataframe(pd.DataFrame([row_data[display_cols]]), width="stretch", hide_index=True)
+
+        if "factors" in results.columns:
+            st.markdown(f"**Factors:** {row_data['factors']}")
+        if "guidelines" in results.columns:
+            st.markdown(f"**Guidelines:** {row_data['guidelines']}")
+
+    # ── Generate report button ───────────────────────────────────────────
+    col_btn, col_info = st.columns([0.4, 0.6])
+    with col_btn:
+        gen_btn = st.button(
+            "🚀 Generate AI Report",
+            type="primary",
+            use_container_width=True,
+        )
+    with col_info:
+        st.markdown(
+            "<div class='ns-helper'>Report is generated dynamically using the selected patient's risk data.</div>",
+            unsafe_allow_html=True,
+        )
+
+    if gen_btn:
+        llm_input = llm_inputs[selected_idx]
+        risk_val = llm_input["risk"]
+        factors_val = llm_input["factors"]
+        guidelines_val = llm_input.get("guidelines", ["Standard reminder"])
+
+        with st.spinner("🧠 Generating AI clinical report..."):
+            report = generate_report(
+                risk=risk_val,
+                factors=factors_val,
+                guidelines=guidelines_val,
+                api_key=api_key if api_key else None,
+                backend=selected_backend,
+            )
+
+        # Cache the report in session state
+        if "generated_reports" not in st.session_state:
+            st.session_state["generated_reports"] = {}
+        st.session_state["generated_reports"][selected_idx] = {
+            "risk": risk_val,
+            "factors": factors_val,
+            "guidelines": guidelines_val,
+            "report": report,
+        }
+
+    # ── Display the report (from cache or freshly generated) ─────────────
+    cached = st.session_state.get("generated_reports", {}).get(selected_idx)
+    if cached:
+        _render_report(
+            cached["risk"],
+            cached["factors"],
+            cached["guidelines"],
+            cached["report"],
+        )
+    else:
+        st.markdown(
+            "<div class='ns-card' style='text-align:center;padding:30px;'>"
+            "<b>No report generated yet.</b><br/>"
+            "Select a patient appointment and click <b>Generate AI Report</b>."
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    # ── Batch report generation ──────────────────────────────────────────
+    st.markdown("---")
+    with st.expander("📊 Batch Report Generation (High-Risk Patients)", expanded=False):
+        st.markdown(
+            "<div class='ns-helper'>Generate reports for all high-risk patients at once.</div>",
+            unsafe_allow_html=True,
+        )
+        batch_threshold = st.slider("Minimum risk for batch", 0.50, 0.95, 0.75, 0.05, key="batch_thresh")
+
+        high_risk_indices = [
+            i for i in range(min(total, len(llm_inputs)))
+            if results["probability"].iloc[i] >= batch_threshold
+        ]
+
+        st.markdown(f"**{len(high_risk_indices)}** patients above {batch_threshold:.0%} threshold.")
+
+        if st.button("Generate All High-Risk Reports", use_container_width=True):
+            if not high_risk_indices:
+                st.info("No patients above this threshold.")
+            else:
+                progress = st.progress(0, text="Generating reports...")
+                if "generated_reports" not in st.session_state:
+                    st.session_state["generated_reports"] = {}
+
+                for count, idx in enumerate(high_risk_indices):
+                    inp = llm_inputs[idx]
+                    report = generate_report(
+                        risk=inp["risk"],
+                        factors=inp["factors"],
+                        guidelines=inp.get("guidelines", ["Standard reminder"]),
+                        api_key=api_key if api_key else None,
+                        backend=selected_backend,
+                    )
+                    st.session_state["generated_reports"][idx] = {
+                        "risk": inp["risk"],
+                        "factors": inp["factors"],
+                        "guidelines": inp.get("guidelines", []),
+                        "report": report,
+                    }
+                    progress.progress(
+                        (count + 1) / len(high_risk_indices),
+                        text=f"Generated {count + 1}/{len(high_risk_indices)} reports",
+                    )
+                st.success(f"✅ Generated {len(high_risk_indices)} reports successfully!")
+                st.rerun()
+
+
+def _render_report(
+    risk: float,
+    factors: List[str],
+    guidelines: List[str],
+    report: str,
+) -> None:
+    """Render a generated report with styled sections in the Streamlit UI."""
+    risk_pct = round(risk * 100, 1)
+
+    # Risk level badge colour
+    if risk >= 0.80:
+        badge_color = "#dc2626"
+        badge_bg = "rgba(239, 68, 68, 0.12)"
+        level = "CRITICAL"
+    elif risk >= 0.65:
+        badge_color = "#ea580c"
+        badge_bg = "rgba(234, 88, 12, 0.12)"
+        level = "HIGH"
+    elif risk >= 0.50:
+        badge_color = "#ca8a04"
+        badge_bg = "rgba(202, 138, 4, 0.12)"
+        level = "MODERATE"
+    else:
+        badge_color = "#16a34a"
+        badge_bg = "rgba(34, 197, 94, 0.12)"
+        level = "LOW"
+
+    st.markdown("---")
+    st.markdown("### 📄 Generated Clinical Report")
+
+    # Top info bar
+    st.markdown(
+        f"""
+        <div style="display:flex;gap:16px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
+            <div style="background:{badge_bg};border:1px solid {badge_color};color:{badge_color};
+                        padding:6px 16px;border-radius:999px;font-weight:700;font-size:0.95rem;">
+                {level} — {risk_pct}%
+            </div>
+            <div style="color:#5a4a38;font-size:0.88rem;">
+                <b>Factors:</b> {', '.join(factors)}
+            </div>
+            <div style="color:#5a4a38;font-size:0.88rem;">
+                <b>Guidelines:</b> {', '.join(guidelines)}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Report body in a styled card
+    # Escape any HTML in the report text, then convert markdown bold/bullets
+    report_html = report.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # Restore markdown bold
+    import re
+    report_html = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", report_html)
+    # Convert newlines to <br>
+    report_html = report_html.replace("\n", "<br/>")
+
+    st.markdown(
+        f"""
+        <div style="background:#ffffff;border:1px solid rgba(100,80,60,0.2);
+                    border-radius:14px;padding:24px 28px;margin-top:8px;
+                    box-shadow:0 4px 16px rgba(0,0,0,0.06);
+                    font-size:0.95rem;line-height:1.7;color:#2c2018;">
+            {report_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Download button
+    st.download_button(
+        label="⬇️ Download Report as Text",
+        data=report,
+        file_name=f"noshow_report_risk_{risk_pct}.txt",
+        mime="text/plain",
+    )
+
+
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     _inject_css()
     st.sidebar.title("Navigation")
     page = st.sidebar.radio(
         "Go to",
-        ["Upload Dataset", "Risk Dashboard", "Analytics"],
+        ["Upload Dataset", "Risk Dashboard", "AI Report", "Analytics"],
         index=0,
         label_visibility="collapsed",
     )
@@ -814,7 +1147,7 @@ def main() -> None:
     st.sidebar.markdown(
         "<div class='ns-helper' style='margin-top:10px; font-size:0.8rem;'>"
         "<b>Flow</b><br/>Raw data → Preprocessing → Model training → "
-        "<b>Upload</b> → <b>Risk dashboard</b> → <b>Analytics</b>"
+        "<b>Upload</b> → <b>Risk dashboard</b> → <b>AI Report</b> → <b>Analytics</b>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -830,6 +1163,8 @@ def main() -> None:
         page_upload()
     elif page == "Risk Dashboard":
         page_risk_dashboard()
+    elif page == "AI Report":
+        page_ai_report()
     else:
         page_analytics()
 
